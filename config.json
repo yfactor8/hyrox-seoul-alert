@@ -1,0 +1,24 @@
+{
+  "event_name": "HYROX Seoul Season 26/27 (14-15 Nov 2026, KINTEX)",
+  "event_id": "69fafdfb5e85aa5b5e0ae5a1",
+  "shop_url": "https://korea.hyrox.com/event/hyrox-seoul-season-26-27-vthaza",
+
+  "watch": [
+    {
+      "label": "Singles Women's Open (Sunday)",
+      "ticket_id": "69fafdfb399575a4b35692a4",
+      "match_key": "SOLO_OPEN_W"
+    }
+  ],
+
+  "ntfy": {
+    "server": "https://ntfy.sh",
+    "topic": "hyrox-seoul-womens-open-1506772f",
+    "priority_available": "urgent",
+    "priority_info": "low"
+  },
+
+  "alert_on_first_run_if_available": true,
+  "send_heartbeat_every_hours": 24,
+  "error_alert_cooldown_minutes": 120
+}

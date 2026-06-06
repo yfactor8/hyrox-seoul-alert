@@ -1,0 +1,40 @@
+name: Hyrox Seoul ticket monitor
+
+# Free, hosted backup watcher — runs on GitHub's servers even when your PC is off.
+# GitHub's minimum cron interval is 5 minutes.
+on:
+  schedule:
+    - cron: "*/5 * * * *"
+  workflow_dispatch: {}   # lets you run it manually from the Actions tab
+
+# Don't pile up overlapping runs.
+concurrency:
+  group: hyrox-monitor
+  cancel-in-progress: false
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # Persist state.json between runs so we only alert on a change, not every run.
+      - name: Restore monitor state
+        uses: actions/cache@v4
+        with:
+          path: state.json
+          key: hyrox-state-${{ github.run_id }}
+          restore-keys: |
+            hyrox-state-
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Run monitor
+        env:
+          # Set this in repo Settings -> Secrets and variables -> Actions.
+          # If unset, it falls back to the topic in config.json.
+          NTFY_TOPIC: ${{ secrets.NTFY_TOPIC }}
+          HYROX_STATE_PATH: state.json
+        run: python hyrox_monitor.py
