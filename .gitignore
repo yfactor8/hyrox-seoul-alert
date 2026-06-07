@@ -4,5 +4,8 @@ monitor.log
 __pycache__/
 *.pyc
 
+# Local overlay holding the real ntfy topic — never commit this
+config.local.json
+
 # Local Claude session data
 .claude/

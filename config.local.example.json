@@ -1,0 +1,6 @@
+{
+  "_comment": "Copy this file to config.local.json (which is git-ignored) and put your real ntfy topic below. This keeps the topic out of the public repo. The cloud watcher uses the NTFY_TOPIC GitHub Actions secret instead.",
+  "ntfy": {
+    "topic": "hyrox-seoul-womens-open-CHANGEME"
+  }
+}

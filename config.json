@@ -13,7 +13,8 @@
 
   "ntfy": {
     "server": "https://ntfy.sh",
-    "topic": "hyrox-seoul-womens-open-1506772f",
+    "topic": "",
+    "_topic_note": "Intentionally blank. Local runs read the real topic from git-ignored config.local.json; cloud runs read it from the NTFY_TOPIC GitHub Actions secret.",
     "priority_available": "urgent",
     "priority_info": "low"
   },

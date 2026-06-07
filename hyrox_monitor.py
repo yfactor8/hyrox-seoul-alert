@@ -27,6 +27,9 @@ import urllib.error
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 CONFIG_PATH = os.path.join(HERE, "config.json")
+# Optional, git-ignored overlay holding the real ntfy topic for local runs, so no
+# secret is committed. Cloud runs get the topic from the NTFY_TOPIC env/secret.
+CONFIG_LOCAL_PATH = os.path.join(HERE, "config.local.json")
 # STATE_PATH / topic can be overridden by env so the same script runs in a hosted
 # cron (e.g. GitHub Actions) with a cached state file and a secret topic.
 STATE_PATH = os.environ.get("HYROX_STATE_PATH", os.path.join(HERE, "state.json"))
@@ -65,6 +68,22 @@ def load_json(path, default):
             return json.load(f)
     except (OSError, ValueError):
         return default
+
+
+def load_config():
+    """Load config.json, then shallow-merge config.local.json over it (one level
+    deep for nested dicts like 'ntfy'). The local file is git-ignored so the real
+    ntfy topic never gets committed."""
+    cfg = load_json(CONFIG_PATH, None)
+    if cfg is None:
+        return None
+    overlay = load_json(CONFIG_LOCAL_PATH, {})
+    for key, val in overlay.items():
+        if isinstance(val, dict) and isinstance(cfg.get(key), dict):
+            cfg[key].update(val)
+        else:
+            cfg[key] = val
+    return cfg
 
 
 def save_json(path, data):
@@ -169,7 +188,7 @@ def evaluate(cfg):
 
 
 def main():
-    cfg = load_json(CONFIG_PATH, None)
+    cfg = load_config()
     if not cfg:
         log("FATAL: cannot read config.json")
         sys.exit(1)

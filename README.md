@@ -32,25 +32,27 @@ heartbeat and a rate-limited error ping if the API can't be reached.
 
 ---
 
-## Alerts — ntfy.sh (set this up once)
+## Alerts — ntfy.sh
 
-Notifications go to a private ntfy topic:
+Notifications go to a private ntfy **topic name that acts as a password** — anyone
+who knows it can read your alerts or spam them. Because this repo is **public**,
+the topic is **never committed**. It lives in two places only:
 
-```
-hyrox-seoul-womens-open-1506772f
-```
+- **Local watcher:** `config.local.json` (git-ignored) — see `config.local.example.json`.
+- **Cloud watcher:** the `NTFY_TOPIC` GitHub Actions secret.
 
+Set up your phone once:
 1. Install the **ntfy** app ([Android](https://play.google.com/store/apps/details?id=io.heckel.ntfy) / [iOS](https://apps.apple.com/us/app/ntfy/id1625396347)).
-2. Tap **+ Subscribe to topic** and enter exactly: `hyrox-seoul-womens-open-1506772f`
+2. Tap **+ Subscribe to topic** and enter your topic (the value in `config.local.json`).
 3. Done. Tapping an alert opens the ticket page so you can check out fast.
 
-> The topic name is effectively your password — anyone who knows it can read the
-> alerts. Keep it private. To change it, edit `topic` in `config.json` (and the
-> `NTFY_TOPIC` secret if you use the GitHub backup).
+> If the topic ever leaks, rotate it: pick a new string, update `config.local.json`
+> **and** the `NTFY_TOPIC` secret (`gh secret set NTFY_TOPIC --body "<new>"`), and
+> re-subscribe your phone.
 
 Send yourself a test anytime:
 ```powershell
-python -c "import json,hyrox_monitor as m; c=json.load(open('config.json',encoding='utf-8')); m.ntfy_push(c,'Test','It works','default')"
+python -c "import json,hyrox_monitor as m; c=m.load_config(); m.ntfy_push(c,'Test','It works','default')"
 ```
 
 ---
@@ -73,19 +75,26 @@ Unregister-ScheduledTask -TaskName HyroxSeoulTicketMonitor -Confirm:$false   # r
 
 Activity is logged to `monitor.log`.
 
-## Runtime 2 — cloud backup for when the PC is off (optional, free)
+## Runtime 2 — cloud backup for when the PC is off (free)
 
 The local task only runs while your computer is on. For true 24/7 coverage,
 `.github/workflows/monitor.yml` runs the **same script on GitHub's servers every
-5 minutes** (GitHub's minimum cron interval), independent of your machine.
+5 minutes**, independent of your machine.
 
-To enable:
-1. Create a **private** GitHub repo and push this folder to it.
-2. In the repo: **Settings → Secrets and variables → Actions → New repository
-   secret**, name `NTFY_TOPIC`, value `hyrox-seoul-womens-open-1506772f`.
-3. Open the **Actions** tab and enable workflows. It then runs automatically.
+This repo is **public** specifically so GitHub Actions minutes are free and
+unlimited (private repos cap free minutes at 2,000/month, which an every-5-min
+cron would blow through in about a week). The only sensitive value, the ntfy
+topic, is kept out of the repo and supplied via the `NTFY_TOPIC` secret:
 
-(State is cached between runs so the cloud watcher also only alerts on changes.)
+```powershell
+gh secret set NTFY_TOPIC --body "<your-topic>"
+```
+
+State is cached between runs so the cloud watcher also only alerts on changes.
+
+> GitHub auto-disables scheduled workflows after **60 days with no repo commits**.
+> Push any small change (or hit **Run workflow** in the Actions tab) occasionally
+> to keep it alive until race day.
 
 ---
 
@@ -94,10 +103,12 @@ To enable:
 | File | Purpose |
 |---|---|
 | `hyrox_monitor.py` | The watcher (stdlib only — no `pip install` needed). |
-| `config.json` | Event id, watched ticket(s), ntfy topic, alert settings. |
+| `config.json` | Event id, watched ticket(s), alert settings. **No secrets.** |
+| `config.local.json` | Git-ignored. Holds the real ntfy topic for local runs. |
+| `config.local.example.json` | Template — copy to `config.local.json` and fill in your topic. |
 | `state.json` | Last-seen status (auto-created; safe to delete to re-baseline). |
 | `monitor.log` | Run history. |
-| `.github/workflows/monitor.yml` | Optional GitHub Actions cloud backup. |
+| `.github/workflows/monitor.yml` | GitHub Actions cloud backup. |
 
 ### Watch more divisions
 Add entries to `watch[]` in `config.json`. Ticket IDs for this event, for example:
