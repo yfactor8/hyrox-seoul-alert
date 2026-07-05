@@ -2,17 +2,23 @@
 """
 HYROX Seoul ticket-availability monitor.
 
-Polls the same public vivenu endpoints the official ticket page uses, decides
-whether each watched division is BUYABLE, and pushes an ntfy.sh notification the
-moment one flips from unavailable -> available (i.e. a cancellation reopens it).
+Renders the REAL vivenu ticket shop in a headless browser and reads the exact
+per-division "SOLD OUT" state a human would see, then pushes an ntfy.sh
+notification the moment a watched division flips from sold-out -> buyable
+(i.e. a cancellation reopens it).
 
-Read-only: it never adds to cart, reserves, or buys anything.
+Why a browser and not the JSON API: vivenu computes per-division sold-out state
+client-side. The public JSON endpoints only return an optimistic event-level
+answer (checkout.allowed=true whenever ANY category has stock), which produced
+false "available" readings. Reading the rendered shop is what actually matches
+what you see when you click through.
 
-Signal (per ticket):
-  buyable = event.saleStatus == "onSale"
-            AND availabilities.checkout.allowed == True
-            AND ticket_id NOT in availabilities.tickets[]   (that list = blocked/sold-out)
-            AND ticket.active == True                        (organizer enable flag)
+Read-only: it navigates the shop's category/filter buttons but never adds to
+cart, reserves, or buys anything.
+
+For each watched division we open the checkout, click through its filter path
+(e.g. Singles -> Open -> Women), locate the specific ticket card by a unique
+name fragment, and mark it BUYABLE unless the card shows a "SOLD OUT" badge.
 
 State is persisted in state.json so we only alert on a *change*, not every run.
 """
@@ -23,7 +29,6 @@ import sys
 import time
 import datetime
 import urllib.request
-import urllib.error
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 CONFIG_PATH = os.path.join(HERE, "config.json")
@@ -35,12 +40,34 @@ CONFIG_LOCAL_PATH = os.path.join(HERE, "config.local.json")
 STATE_PATH = os.environ.get("HYROX_STATE_PATH", os.path.join(HERE, "state.json"))
 LOG_PATH = os.path.join(HERE, "monitor.log")
 
-LISTINGS_URL = "https://vivenu.com/api/events/public/listings/{event_id}"
-AVAIL_URL = "https://vivenu.com/api/public/events/{event_id}/availabilities"
-INFO_URL = "https://vivenu.com/api/events/info/{event_id}"
-
 UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
       "(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36")
+
+# JS run in the page to locate a specific ticket card by a unique name fragment
+# and report whether it is sold out. Climbs a few ancestors to catch the badge
+# but stops before pulling in an excluded neighbour card (e.g. the Adaptive row).
+CARD_JS = r"""
+(args) => {
+  const {contains, excludes} = args;
+  const all = Array.from(document.querySelectorAll('div,li,article,section,button'));
+  let best = null;
+  for (const n of all) {
+    const t = n.innerText || '';
+    if (t.includes(contains) && !excludes.some(x => t.includes(x)) && t.includes('₩')) {
+      if (!best || t.length < best.len) best = {el: n, len: t.length, txt: t};
+    }
+  }
+  if (!best) return {found: false};
+  let node = best.el, soldout = false;
+  for (let k = 0; k < 3 && node; k++) {
+    const t = node.innerText || '';
+    if (excludes.some(x => t.includes(x))) break;
+    if (/sold\s*out/i.test(t)) { soldout = true; break; }
+    node = node.parentElement;
+  }
+  return {found: true, soldout: soldout, snippet: best.txt.slice(0, 120)};
+}
+"""
 
 
 def now():
@@ -93,16 +120,6 @@ def save_json(path, data):
     os.replace(tmp, path)
 
 
-def http_get_json(url, timeout=20):
-    req = urllib.request.Request(url, headers={
-        "User-Agent": UA,
-        "Accept": "application/json",
-        "Accept-Language": "en-US,en;q=0.9",
-    })
-    with urllib.request.urlopen(req, timeout=timeout) as resp:
-        return json.load(resp)
-
-
 _PRIORITY_MAP = {"min": 1, "low": 2, "default": 3, "high": 4, "urgent": 5, "max": 5}
 
 
@@ -138,52 +155,92 @@ def ntfy_push(cfg, title, message, priority, click=None, tags=None):
         return False
 
 
-def evaluate(cfg):
-    """Return (results, raw) where results maps ticket_id -> dict(buyable, reason, label)."""
-    eid = cfg["event_id"]
-    listings = http_get_json(LISTINGS_URL.format(event_id=eid))
-    avail = http_get_json(AVAIL_URL.format(event_id=eid))
+def _dismiss_cookies(page):
+    for label in ("Only necessary", "Accept all", "Accept"):
+        try:
+            b = page.get_by_role("button", name=label)
+            if b.count():
+                b.first.click(timeout=3000)
+                return
+        except Exception:  # noqa: BLE001
+            pass
 
-    sale_status = listings.get("saleStatus")
-    indicator = listings.get("availabilityIndicator")
-    checkout_allowed = bool(((avail or {}).get("checkout") or {}).get("allowed"))
-    blocked = {t.get("id") or t.get("_id") for t in (avail.get("tickets") or [])}
 
-    # active flags (organizer enable). info is a touch heavier; fetch best-effort.
-    active_by_id = {}
-    try:
-        info = http_get_json(INFO_URL.format(event_id=eid))
-        for t in info.get("tickets", []):
-            tid = t.get("id") or t.get("_id")
-            active_by_id[tid] = bool(t.get("active"))
-    except Exception as e:  # noqa: BLE001
-        log(f"info fetch failed (non-fatal): {e}")
+def _check_one(page, checkout_url, w):
+    """Navigate the shop to one watched division and return its state dict.
+    Raises on navigation failure so the caller can treat it as an error (rather
+    than silently reporting a wrong answer)."""
+    page.goto(checkout_url, wait_until="domcontentloaded", timeout=60000)
+    page.wait_for_timeout(3500)
+    _dismiss_cookies(page)
+    page.wait_for_timeout(800)
 
-    results = {}
-    for w in cfg["watch"]:
-        tid = w["ticket_id"]
-        reasons = []
-        if sale_status != "onSale":
-            reasons.append(f"saleStatus={sale_status}")
-        if not checkout_allowed:
-            reasons.append("checkout not allowed")
-        if tid in blocked:
-            reasons.append("ticket in sold-out/blocked list")
-        if tid in active_by_id and not active_by_id[tid]:
-            reasons.append("ticket inactive")
-        buyable = len(reasons) == 0
-        results[tid] = {
-            "label": w["label"],
-            "buyable": buyable,
-            "reason": "OK" if buyable else "; ".join(reasons),
-        }
+    # Click the category, then each filter step (e.g. "Singles" -> "Open" -> "Women").
+    path = [w["nav"]["category"]] + list(w["nav"].get("steps", []))
+    for label in path:
+        page.get_by_text(label, exact=True).first.click(timeout=15000)
+        page.wait_for_timeout(1500)
 
-    raw = {
-        "saleStatus": sale_status,
-        "indicator": indicator,
-        "checkout_allowed": checkout_allowed,
-        "blocked_count": len(blocked),
+    # Wait for the target card to render, then read its sold-out state.
+    contains = w["name_contains"]
+    excludes = w.get("name_excludes", [])
+    page.get_by_text(contains, exact=False).first.wait_for(timeout=15000)
+    info = page.evaluate(CARD_JS, {"contains": contains, "excludes": excludes})
+    if not info.get("found"):
+        raise RuntimeError(f"target card not found for {w['label']!r} "
+                           f"(nav {path}); shop layout may have changed")
+    buyable = not info.get("soldout")
+    return {
+        "label": w["label"],
+        "buyable": buyable,
+        "reason": "buyable (no SOLD OUT badge)" if buyable else "SOLD OUT badge present",
     }
+
+
+def _ensure_browsers_path(cfg):
+    """Windows Task Scheduler launches processes with a stripped environment that
+    can lack %LOCALAPPDATA%, so Playwright fails to locate the Chromium we
+    installed under %LOCALAPPDATA%\\ms-playwright. Resolve it explicitly. On Linux
+    (cloud) none of these exist, so we leave Playwright's own default alone."""
+    if os.environ.get("PLAYWRIGHT_BROWSERS_PATH"):
+        return
+    candidates = []
+    if cfg.get("playwright_browsers_path"):
+        candidates.append(cfg["playwright_browsers_path"])
+    for base in (os.environ.get("LOCALAPPDATA"),
+                 os.path.join(os.environ["USERPROFILE"], "AppData", "Local")
+                 if os.environ.get("USERPROFILE") else None,
+                 os.path.join(os.path.expanduser("~"), "AppData", "Local")):
+        if base:
+            candidates.append(os.path.join(base, "ms-playwright"))
+    for cand in candidates:
+        if cand and os.path.isdir(cand):
+            os.environ["PLAYWRIGHT_BROWSERS_PATH"] = cand
+            log(f"using browsers path: {cand}")
+            return
+    log(f"WARN: no ms-playwright dir found; tried {candidates}")
+
+
+def evaluate(cfg):
+    """Render the real shop and return (results, raw). results maps ticket_id ->
+    dict(label, buyable, reason). Raises on failure (handled by caller)."""
+    _ensure_browsers_path(cfg)
+    from playwright.sync_api import sync_playwright
+
+    checkout_url = cfg["checkout_url"]
+    results = {}
+    with sync_playwright() as p:
+        browser = p.chromium.launch(headless=True, args=["--no-sandbox"])
+        try:
+            ctx = browser.new_context(locale="en-US", user_agent=UA)
+            page = ctx.new_page()
+            page.set_default_timeout(20000)
+            for w in cfg["watch"]:
+                results[w["ticket_id"]] = _check_one(page, checkout_url, w)
+        finally:
+            browser.close()
+
+    raw = {"method": "browser-render", "checked": len(results)}
     return results, raw
 
 
@@ -199,13 +256,8 @@ def main():
 
     try:
         results, raw = evaluate(cfg)
-    except urllib.error.HTTPError as e:
-        log(f"HTTP error {e.code} polling vivenu: {e}")
-        maybe_error_alert(cfg, state, f"HTTP {e.code}")
-        save_json(STATE_PATH, state)
-        return
     except Exception as e:  # noqa: BLE001
-        log(f"poll error: {e}")
+        log(f"check error: {e}")
         maybe_error_alert(cfg, state, str(e))
         save_json(STATE_PATH, state)
         return

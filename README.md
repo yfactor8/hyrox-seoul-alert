@@ -8,27 +8,39 @@ buyable — e.g. when a cancellation reopens a spot.
 - **Shop:** https://korea.hyrox.com/event/hyrox-seoul-season-26-27-vthaza
 - **Ticket watched:** `HYROX WOMEN 여자 오픈 | Sunday` (internal key `SOLO_OPEN_W`)
 
-It is **read-only**: it polls the same public JSON endpoints the official ticket
-page uses and never adds to cart, reserves, or buys anything.
+It is **read-only**: it navigates the shop's category/filter buttons to reach the
+ticket, but never adds to cart, reserves, or buys anything.
 
 ---
 
 ## How it decides "available"
 
-Each poll hits two public vivenu endpoints (no login/API key needed):
+It renders the **real ticket shop** in a headless browser (Playwright/Chromium)
+and reads the exact per-division state a human sees. Each check:
 
-| Endpoint | Used for |
-|---|---|
-| `…/api/events/public/listings/{eventId}` | `saleStatus`, `availabilityIndicator` |
-| `…/api/public/events/{eventId}/availabilities` | `checkout.allowed` + the blocked/sold-out ticket list |
+1. Opens the checkout: `…/checkout/{eventId}`
+2. Clicks the filter path for the division (Women's Open = **Singles → Open → Women**)
+3. Finds the specific ticket card by a unique name fragment (`여자 오픈`, excluding
+   the Adaptive row `어뎁티브`)
+4. Marks it **BUYABLE** unless that card shows a **SOLD OUT** badge
 
-A division is reported **BUYABLE** when:
-`saleStatus == onSale` **and** `checkout.allowed` **and** the ticket is **not** in
-the blocked list **and** the ticket's `active` flag is true.
+> Why a browser instead of the JSON API: vivenu computes per-division sold-out
+> state **client-side**. The public JSON endpoints only return an optimistic
+> event-level answer (`checkout.allowed=true` whenever *any* category has stock),
+> which gave false "available" readings. Reading the rendered shop is the only
+> thing that matches what you actually see.
 
 It remembers the last status in `state.json` and only pushes when the status
-**changes** (so no per-minute spam). It also sends a daily "still alive"
-heartbeat and a rate-limited error ping if the API can't be reached.
+**changes** (so no per-check spam), plus a rate-limited error ping if the shop
+can't be read. (The old daily "alive" heartbeat is off by default —
+`send_heartbeat_every_hours: 0`.)
+
+**Dependency:** Playwright + Chromium. Install once locally:
+```powershell
+pip install -r requirements.txt
+python -m playwright install chromium
+```
+(The cloud workflow installs these automatically.)
 
 ---
 
@@ -102,8 +114,9 @@ State is cached between runs so the cloud watcher also only alerts on changes.
 
 | File | Purpose |
 |---|---|
-| `hyrox_monitor.py` | The watcher (stdlib only — no `pip install` needed). |
-| `config.json` | Event id, watched ticket(s), alert settings. **No secrets.** |
+| `hyrox_monitor.py` | The watcher (renders the shop via Playwright). |
+| `requirements.txt` | Python deps (Playwright). |
+| `config.json` | Checkout URL, watched ticket(s) + filter path, alert settings. **No secrets.** |
 | `config.local.json` | Git-ignored. Holds the real ntfy topic for local runs. |
 | `config.local.example.json` | Template — copy to `config.local.json` and fill in your topic. |
 | `state.json` | Last-seen status (auto-created; safe to delete to re-baseline). |
@@ -111,10 +124,20 @@ State is cached between runs so the cloud watcher also only alerts on changes.
 | `.github/workflows/monitor.yml` | GitHub Actions cloud backup. |
 
 ### Watch more divisions
-Add entries to `watch[]` in `config.json`. Ticket IDs for this event, for example:
+Add entries to `watch[]` in `config.json`. Each needs the shop **filter path** and
+a **unique name fragment** for the ticket card. Example (the one being watched):
 
-| Division | match_key | ticket_id |
-|---|---|---|
-| Singles Women's Open (Sun) | `SOLO_OPEN_W` | `69fafdfb399575a4b35692a4` |
+```json
+{
+  "label": "Singles Women's Open (Sunday)",
+  "ticket_id": "69fafdfb399575a4b35692a4",
+  "nav": { "category": "Singles", "steps": ["Open", "Women"] },
+  "name_contains": "여자 오픈",
+  "name_excludes": ["ADAPTIVE", "어뎁티브"]
+}
+```
 
-(Find others by opening the shop and inspecting `…/api/events/info/{eventId}`.)
+- `nav.category` = the category card to click; `nav.steps` = the filter buttons
+  after it (Class then Gender for Singles: `Open`/`Pro`, then `Men`/`Women`).
+- `name_contains` must uniquely match the ticket card's text; `name_excludes`
+  guards against matching a similarly-named neighbour (e.g. the Adaptive row).

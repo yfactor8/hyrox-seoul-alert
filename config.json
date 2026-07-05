@@ -2,12 +2,16 @@
   "event_name": "HYROX Seoul Season 26/27 (14-15 Nov 2026, KINTEX)",
   "event_id": "69fafdfb5e85aa5b5e0ae5a1",
   "shop_url": "https://korea.hyrox.com/event/hyrox-seoul-season-26-27-vthaza",
+  "checkout_url": "https://korea.hyrox.com/checkout/69fafdfb5e85aa5b5e0ae5a1",
 
   "watch": [
     {
       "label": "Singles Women's Open (Sunday)",
       "ticket_id": "69fafdfb399575a4b35692a4",
-      "match_key": "SOLO_OPEN_W"
+      "match_key": "SOLO_OPEN_W",
+      "nav": { "category": "Singles", "steps": ["Open", "Women"] },
+      "name_contains": "여자 오픈",
+      "name_excludes": ["ADAPTIVE", "어뎁티브"]
     }
   ],
 
@@ -20,6 +24,6 @@
   },
 
   "alert_on_first_run_if_available": true,
-  "send_heartbeat_every_hours": 24,
+  "send_heartbeat_every_hours": 0,
   "error_alert_cooldown_minutes": 120
 }

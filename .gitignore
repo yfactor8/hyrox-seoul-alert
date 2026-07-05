@@ -7,5 +7,10 @@ __pycache__/
 # Local overlay holding the real ntfy topic — never commit this
 config.local.json
 
+# Local Playwright browser install (Windows) — large, machine-specific
+.pw-browsers/
+diag.py
+diag.txt
+
 # Local Claude session data
 .claude/
