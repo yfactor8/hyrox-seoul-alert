@@ -221,10 +221,7 @@ def _ensure_browsers_path(cfg):
     log(f"WARN: no ms-playwright dir found; tried {candidates}")
 
 
-def evaluate(cfg):
-    """Render the real shop and return (results, raw). results maps ticket_id ->
-    dict(label, buyable, reason). Raises on failure (handled by caller)."""
-    _ensure_browsers_path(cfg)
+def _evaluate_once(cfg):
     from playwright.sync_api import sync_playwright
 
     checkout_url = cfg["checkout_url"]
@@ -239,9 +236,26 @@ def evaluate(cfg):
                 results[w["ticket_id"]] = _check_one(page, checkout_url, w)
         finally:
             browser.close()
+    return results, {"method": "browser-render", "checked": len(results)}
 
-    raw = {"method": "browser-render", "checked": len(results)}
-    return results, raw
+
+def evaluate(cfg):
+    """Render the real shop and return (results, raw). results maps ticket_id ->
+    dict(label, buyable, reason). Retries a few times so a single transient blip
+    (a slow render, a dropped connection) self-heals within one run instead of
+    surfacing as an error. Raises only if every attempt fails."""
+    _ensure_browsers_path(cfg)
+    attempts = int(cfg.get("check_attempts", 3))
+    last_err = None
+    for i in range(1, attempts + 1):
+        try:
+            return _evaluate_once(cfg)
+        except Exception as e:  # noqa: BLE001
+            last_err = e
+            if i < attempts:
+                log(f"check attempt {i}/{attempts} failed ({type(e).__name__}); retrying")
+                time.sleep(4)
+    raise last_err
 
 
 def main():
@@ -257,12 +271,15 @@ def main():
     try:
         results, raw = evaluate(cfg)
     except Exception as e:  # noqa: BLE001
-        log(f"check error: {e}")
-        maybe_error_alert(cfg, state, str(e))
+        fails = state.get("consec_failures", 0) + 1
+        state["consec_failures"] = fails
+        log(f"check error (consecutive #{fails}): {e}")
+        maybe_error_alert(cfg, state, str(e), fails)
         save_json(STATE_PATH, state)
         return
 
-    # clear any error-cooldown once polling works again
+    # a success clears the failure streak and any error cooldown
+    state["consec_failures"] = 0
     state.pop("last_error_alert", None)
 
     summary = ", ".join(f"{r['label']}={'BUY' if r['buyable'] else 'no'}"
@@ -301,12 +318,19 @@ def main():
     save_json(STATE_PATH, state)
 
 
-def maybe_error_alert(cfg, state, detail):
+def maybe_error_alert(cfg, state, detail, fails):
+    """Only ping when the check has failed on several *consecutive* runs — a
+    sustained breakage worth attention — not on a single transient network/render
+    blip that recovers on the next run. A cooldown then avoids repeat spam."""
+    threshold = int(cfg.get("error_alert_after_consecutive_failures", 5))
+    if fails < threshold:
+        return
     cooldown = cfg.get("error_alert_cooldown_minutes", 120) * 60
     last = state.get("last_error_alert", 0)
     if time.time() - last >= cooldown:
         ntfy_push(cfg, "⚠️ Hyrox monitor error",
-                  f"Polling failed: {detail}. Will keep retrying.",
+                  f"The check has failed {fails} times in a row: {detail}. "
+                  f"Still retrying — you may want to check it.",
                   cfg["ntfy"]["priority_info"], tags="warning")
         state["last_error_alert"] = time.time()
 

@@ -25,5 +25,7 @@
 
   "alert_on_first_run_if_available": true,
   "send_heartbeat_every_hours": 0,
+  "check_attempts": 3,
+  "error_alert_after_consecutive_failures": 5,
   "error_alert_cooldown_minutes": 120
 }
